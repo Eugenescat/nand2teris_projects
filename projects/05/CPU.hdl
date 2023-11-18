@@ -1,0 +1,118 @@
+// This file is part of www.nand2tetris.org
+// and the book "The Elements of Computing Systems"
+// by Nisan and Schocken, MIT Press.
+// File name: projects/05/CPU.hdl
+/**
+ * The Hack Central Processing unit (CPU).
+ * Parses the binary code in the instruction input and executes it according to the
+ * Hack machine language specification. In the case of a C-instruction, computes the
+ * function specified by the instruction. If the instruction specifies to read a memory
+ * value, the inM input is expected to contain this value. If the instruction specifies
+ * to write a value to the memory, sets the outM output to this value, sets the addressM
+ * output to the target address, and asserts the writeM output (when writeM == 0, any
+ * value may appear in outM).
+ * If the reset input is 0, computes the address of the next instruction and sets the
+ * pc output to that value. If the reset input is 1, sets pc to 0.
+ * Note: The outM and writeM outputs are combinational: they are affected by the
+ * instruction's execution during the current cycle. The addressM and pc outputs are
+ * clocked: although they are affected by the instruction's execution, they commit to
+ * their new values only in the next cycle.
+ */
+CHIP CPU {
+
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction for execution
+        reset;           // Signals whether to restart the current
+                         // program (reset==1) or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M? 
+        addressM[15],    // Address in data memory (of M)
+        pc[15];          // Address of next instruction
+
+    PARTS:
+    
+    // 两个Mux16：
+    // 根据instruction leftmost bit判断是a-instruction还是c-instruction
+    // 例如，如果输入的是a-inst，instruction[15]==0,则instA==1,instC==0
+    Not(in=instruction[15], out=instA);
+    Not(in=instA, out=instC);
+
+    // 如果是c-instruction，就输出outALU；如果是a-instruction，就输出a-instruction
+    // 【遗留问题】：但是这样c-instruction是如何进入这个系统的呢？其他位置的components（例如PC）为什么可以在没有import的情况下调用instruction的bits？
+    // 【遗留问题】：例如这条指令是A=D+M，上一条指令是@25（上一条指令输出的outALU是垃圾），此时A-register存入inA（但是此时inA是空的）
+    // 随后在第二个Mux中选择M,D和M进入ALU,计算后输出outALU，重新进入第一个Mux，并存入A-register（即：将D+M的计算结果存入A）
+    // 但是在上述情况下，难道不会在第一次输出空的outA时，outA就拐弯进入PC，然后输出一个空地址吗？
+    Mux16(a=outALU, b=instruction, sel=instA, out=inA);   
+
+    // c-instruction[12]表示将进入ALU运算的是A还是M,a=1 => M
+    // 但如果我的运算同时需要A和M不就不行了吗 => 本来就不能同时对A和M进行操作，再回去重读一遍hack的comp表！
+    Mux16(a=outA, b=inM, sel=AorMtoALU, out=outAorM);
+
+    // 如果a-instruction（一个新地址），输出outA; 如果c-instruction且instruction[12]==0,输出outA；
+    // 有且只有同时满足c-instruction且instruction[12]==1时，输出inM
+    And(a=instC, b=instruction[12],out=AorMtoALU);
+    
+
+    // ALU：利用c1 - c6 bits
+    // ng, zr是平等于out的输出，而不是输入的东西，所以可以直接defalut命名输出也叫做ng,zr
+    // 根据hack的comp表，只能计算D和A/M，这与该ALU只能输入两个值的设计框架相吻合
+    // 【遗留问题】：但如果outAorM输入的是一条a-instruction，ALU的执行不就没有意义了吗？个人理解：是不是直接被drop掉了？因为没有指向任何用来存储的寄存器或内存地址
+    ALU(x=outD ,y=outAorM ,zx=instruction[11] ,nx=instruction[10] ,zy=instruction[9] ,ny=instruction[8] ,f=instruction[7] ,no=instruction[6] ,out=outALU, out=outM ,zr=zr ,ng=ng );
+
+    // REGISTER：对于c-instruction，利用da, dd, dm bits，每个bit分别对应是否存入A|D|M register
+    // A-register: 如果da为真，就向A-register存入inA（可能是A-instruction的address，也可能是outALU）
+    ARegister(in=inA, load=loadA, out=outA, out[0..14]=addressM);
+    // 对于da为真的情况，如果输入的是a-instruction，也存入A-register(loadA==1)，所以用Or gate
+    Or(a=instA, b=instruction[5], out=loadA);
+
+    // D-register: 如果dd为真，就向D-register存入outALU
+    DRegister(in=outALU, load=loadD, out=outD);
+    And(a=instC, b=instruction[4], out=loadD);
+
+    // 如果dm为真，就输出为真的writeM
+    And(a=instC, b=instruction[3], out=writeM);
+
+
+    // PC：利用j1 - j3 bits
+    // pc(1)要么reset;(2)要么存入outA（跳转后的register地址）;(3)要么在上一个pc（也是一个register地址）的基础上increment 1
+    // 所以inc总是true，loadPC由jump bits控制
+    PC(in=outA ,load=loadPC ,inc=true,reset=reset ,out[0..14]=pc);
+    
+    // c-instruction的Jump bits的意义就是：
+    // 给定一个jump的条件，如果ALU的输出结果满足该条件，则执行jump
+    // 也就是说，执行jump的前提是双向满足instruction和ALU两个条件
+    // 这里构造的思想是，将ALU输出结果的所有可能情形分成互斥的三类: greater than zero | equal to zero | less than zero
+    // 并从c-instruction中分出3 bits分别对应这三类情形
+    // 所谓的JGE,JLE,JMP只是这三类情形的排列组合，机器会挨个bit去核对有没有满足的
+
+    // 通过zr和ng构造出greater than zero
+    // 如果c-instruction[0]=1且outALU满足gt，则JGT为真
+    And(a=instruction[0], b= GT, out=JGT);
+    Or(a=zr, b=ng, out=LE);
+    Not(in=LE, out=GT);
+
+    // 通过zr构造出equal to zero
+    // 如果c-instruction[1]=1且outALU满足eq，则EQ为真
+    And(a=instruction[1], b=zr, out=JEQ);
+
+    // 通过ng构造出less than zero
+    // 如果c-instruction[2]=1且outALU满足lt，则LT为真
+    And(a=instruction[2], b=ng, out=JLT);
+
+    // 如果输入的C-instruction满足了任何一类jump条件, 就将outA（跳转后的register地址）输入到program counter里(loadPC==1)
+    Or(a=JGT, b=JEQ, out=JGE);
+    Or(a=JLT ,b=JGE ,out=JMP);
+    // 跳转的前提是c-instruction;如果输入的是a-instruction，那上面一切都无意义，loadPC==0, PC+=1
+    And(a=instC, b=JMP, out=loadPC);
+
+
+
+
+
+
+
+
+
+}
