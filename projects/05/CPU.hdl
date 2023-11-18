@@ -78,6 +78,7 @@ CHIP CPU {
     // PC：利用j1 - j3 bits
     // pc(1)要么reset;(2)要么存入outA（跳转后的register地址）;(3)要么在上一个pc（也是一个register地址）的基础上increment 1
     // 所以inc总是true，loadPC由jump bits控制
+    // if reset==1, the out of PC would be 0(通过一个Mux,之前写过), 也就意味着重新读取ROM[0]的指令
     PC(in=outA ,load=loadPC ,inc=true,reset=reset ,out[0..14]=pc);
     
     // c-instruction的Jump bits的意义就是：

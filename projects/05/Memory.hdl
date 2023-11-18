@@ -19,18 +19,28 @@ CHIP Memory {
     OUT out[16];
 
     PARTS:
-    
+
     // 16384 = 2^14，即15bit（1000……00）
     // 24576 = 16384 * 1.5， 即15bit(1100……00)
 
     DMux4Way(in=load ,sel=address[13..14] ,a=ram1 ,b=ram2 ,c=scr ,d=kbd );
 
-    RAM16k(in=in ,load=loadRAM ,address=address[0..13] ,out=outRAM );
+    Or(a=ram1, b=ram2, out=r);
 
-    Screen(in=in ,load= ,address=address[] ,out= );
+    // if address 0 to 16383, access the RAM, output the outM
+    RAM16K(in=in ,load=r ,address=address[0..13] ,out=outr );
 
-    Keyboard(out= );
+    // if address 16384 to 24575, access the Screen
+    // why address[0..12]? step1: when you drop address[14], you drop the former 16384 bits, start again from Screen[0];
+    // step2: when address is over 16384 and under 24576, address[13] must be zero thus can be dropped
+    Screen(in=in ,load=scr ,address=address[0..12] ,out=outs);
 
-    Mux4Way16(a= ,b= ,c= ,d= ,sel=address[] ,out=out );
+    // input by keyboard physically, only if address == 24576 (kbd==1), this "k" would be out
+    // if the address==24576, it means the machine needs our interactive input from the keyboard
+    // 【遗留问题】当address==24576时，程序会一直等待我们键入keyboard；
+    // 当address!=24576时，这条指令应当也会运行，但我们不会输入keyboard，为什么程序不会卡住呢？这条code是会给outk自动赋值为0吗？
+    Keyboard(out=outk );
+
+    Mux4Way16(a=outr ,b=outr ,c=outs ,d=outk ,sel=address[13..14] ,out=out );
 }
 
